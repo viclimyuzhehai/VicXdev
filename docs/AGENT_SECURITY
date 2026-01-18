@@ -1,0 +1,8 @@
+Agent security and permissions (read first)
+
+- The Agent runs locally inside the Electron app (no cloud access).
+- All filesystem writes, folder creation, removals, renames, and command executions require explicit user confirmation in the UI.
+- For multi-file/batch operations, the Agent will offer to create a git backup commit (recommended) before making changes.
+- Batch tasks still prompt per subtask to minimize accidental destructive operations.
+- Do not enable fully autonomous execution unless you fully trust the code and workspace.
+- Always keep backups and use git before running large changes.
