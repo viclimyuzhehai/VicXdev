@@ -1,0 +1,144 @@
+import React, { useState } from 'react'
+
+/*
+ AgentPanel:
+ - Builds a todo list
+ - Supports write/mkdir/rm/rename and batch tasks
+ - Before batch-run it can create a git backup commit
+ - Prompts user before each destructive action
+*/
+
+function prettyTask(t) {
+  if (t.type === 'write') return `Write file: ${t.path}`
+  if (t.type === 'mkdir') return `Create folder: ${t.path}`
+  if (t.type === 'rm') return `Remove: ${t.path}`
+  if (t.type === 'rename') return `Rename: ${t.oldPath} -> ${t.newPath}`
+  if (t.type === 'run') return `Run command: "${t.cmd}" in ${t.cwd}`
+  if (t.type === 'batch') return `Batch: ${t.title}`
+  return JSON.stringify(t)
+}
+
+export default function AgentPanel({ workspace, setOpenFile }) {
+  const [todos, setTodos] = useState([])
+  const [log, setLog] = useState('vicXcode agent log:')
+
+  const appendLog = (s) => setLog(prev => prev + '\n' + s)
+
+  const analyze = async () => {
+    if (!workspace) return alert('Open a workspace first')
+    appendLog(`Analyzing ${workspace}...`)
+    const pkg = await window.electronAPI.readFile(workspace + '/package.json')
+    const readme = await window.electronAPI.readFile(workspace + '/README.md')
+
+    const newTodos = []
+    if (!pkg.error) {
+      newTodos.push({ id: 'npm-install', type: 'run', title: 'Run npm install', cmd: 'npm install', cwd: workspace })
+    }
+    if (readme.error) {
+      newTodos.push({ id: 'add-readme', type: 'write', title: 'Add README.md', path: workspace + '/README.md', contents: '# New Project\n' })
+    }
+
+    // Example multi-file batch (creates src folder + files)
+    newTodos.push({
+      id: 'multi-edit-sample',
+      type: 'batch',
+      title: 'Sample multi-file edit',
+      tasks: [
+        { type: 'mkdir', path: workspace + '/src' },
+        { type: 'write', path: workspace + '/src/helper.js', contents: "export function help(){ return 'help' }" },
+        { type: 'write', path: workspace + '/src/index.js', contents: "import { help } from './helper.js'; console.log(help())" }
+      ]
+    })
+
+    setTodos(newTodos)
+    appendLog(`Analysis complete. ${newTodos.length} tasks created.`)
+  }
+
+  const runTask = async (t) => {
+    if (t.type === 'run') {
+      const confirm = window.confirm(`Run command?\n${t.cmd}\nCWD: ${t.cwd}`)
+      if (!confirm) return
+      appendLog(`> Running: ${t.cmd}`)
+      const res = await window.electronAPI.runCommand(t.cwd, t.cmd)
+      appendLog(res.stdout || res.stderr || res.error || 'No output')
+    } else if (t.type === 'write') {
+      const confirm = window.confirm(`Write file?\n${t.path}`)
+      if (!confirm) return
+      const res = await window.electronAPI.writeFile(t.path, t.contents)
+      appendLog(`Write ${t.path}: ${res.ok ? 'ok' : res.error}`)
+    } else if (t.type === 'mkdir') {
+      const confirm = window.confirm(`Create folder?\n${t.path}`)
+      if (!confirm) return
+      const res = await window.electronAPI.mkdir(t.path)
+      appendLog(`Mkdir ${t.path}: ${res.ok ? 'ok' : res.error}`)
+    } else if (t.type === 'rm') {
+      const confirm = window.confirm(`Remove recursively?\n${t.path}`)
+      if (!confirm) return
+      const res = await window.electronAPI.rm(t.path)
+      appendLog(`Remove ${t.path}: ${res.ok ? 'ok' : res.error}`)
+    } else if (t.type === 'rename') {
+      const confirm = window.confirm(`Rename?\n${t.oldPath} -> ${t.newPath}`)
+      if (!confirm) return
+      const res = await window.electronAPI.rename(t.oldPath, t.newPath)
+      appendLog(`Rename: ${res.ok ? 'ok' : res.error}`)
+    } else if (t.type === 'batch') {
+      // create a git backup before running batch (recommended)
+      const isGit = await window.electronAPI.runCommand(workspace, 'git rev-parse --is-inside-work-tree').catch(()=>({ error: 'git check failed' }))
+      if (!isGit.error && isGit.stdout && isGit.stdout.trim() === 'true') {
+        const backupConfirm = window.confirm('Repository appears to be a git repo. Create a backup commit before running the batch? (recommended)')
+        if (backupConfirm) {
+          appendLog('Creating git backup commit...')
+          const commitCmd = 'git add -A && git commit -m "vicXcode agent: backup before batch tasks" || echo "no changes to commit"'
+          const commitRes = await window.electronAPI.runCommand(workspace, commitCmd)
+          appendLog(commitRes.stdout || commitRes.stderr || commitRes.error || 'Backup step finished')
+        }
+      }
+
+      const proceed = window.confirm(`Execute batch "${t.title}" including ${t.tasks.length} subtasks? You will be prompted per subtask.`)
+      if (!proceed) return
+      for (const sub of t.tasks) {
+        await runTask(sub)
+      }
+    }
+  }
+
+  const runAll = async () => {
+    if (!todos.length) return
+    for (const t of todos) {
+      await runTask(t)
+    }
+  }
+
+  const openSample = (t) => {
+    if (t.type === 'write' && t.path) {
+      setOpenFile && setOpenFile(t.path)
+    } else if (t.type === 'batch' && t.tasks && t.tasks[0] && t.tasks[0].path) {
+      setOpenFile && setOpenFile(t.tasks[0].path)
+    }
+  }
+
+  return (
+    <div className="agent-panel">
+      <h4>Agent (vicXcode)</h4>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={analyze}>Analyze workspace</button>
+        <button onClick={runAll}>Run All</button>
+      </div>
+
+      <ul>
+        {todos.map(t => (
+          <li key={t.id} className="todo-item">
+            <div className="todo-title">{t.title}</div>
+            <div className="todo-type">{prettyTask(t)}</div>
+            <div className="todo-actions">
+              <button onClick={() => runTask(t)}>Run</button>
+              <button onClick={() => openSample(t)}>Open</button>
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <pre className="agent-log">{log}</pre>
+    </div>
+  )
+}
